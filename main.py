@@ -3,10 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 from databases import Database
-from sqlalchemy import create_engine, MetaData, Table, Column, String
+from sqlalchemy import create_engine, MetaData, Table, Column, String, Text, DateTime, func
 from sqlalchemy.dialects.postgresql import UUID
 import uuid, json, httpx, os, base64
 from dotenv import load_dotenv
+from datetime import datetime, timezone, timedelta
 
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -41,6 +42,16 @@ orcamentos = Table(
     Column("telefone", String, nullable=False),
     Column("servico", String, nullable=False),
 )
+
+# **ALTERADO**: Definição da tabela de histórico com timestamp para expiração
+historico_conversas = Table(
+    "historico_conversas",
+    metadata,
+    Column("telefone", String, primary_key=True),
+    Column("historico", Text, nullable=False),
+    Column("last_updated_at", DateTime(timezone=True), nullable=False, server_default=func.now())
+)
+
 
 # --- Ciclo de Vida da Aplicação ---
 @app.on_event("startup")
@@ -91,20 +102,6 @@ async def chamar_ia(messages: List[dict]) -> str | dict:
         print(f"Erro na IA: {e}")
         return "Desculpe, ocorreu um erro interno. Tente novamente em instantes."
 
-async def baixar_e_converter_base64(url: str, mime_type: str) -> str:
-    """
-    Baixa um arquivo de mídia (áudio/imagem) de uma URL e o converte para uma string base64.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resposta = await client.get(url)
-            resposta.raise_for_status()
-            base64_str = base64.b64encode(resposta.content).decode("utf-8")
-            return f"data:{mime_type};base64,{base64_str}"
-    except Exception as e:
-        print(f"Erro ao baixar/converter mídia: {e}")
-        return "[Erro ao processar mídia]"
-
 # --- Endpoints da API ---
 
 @app.get("/")
@@ -115,7 +112,8 @@ async def root():
 @app.post("/chat")
 async def chat(dados: MensagemChat):
     """
-    Endpoint principal para interagir com o chatbot.
+    Endpoint principal para interagir com o chatbot. Este endpoint é sem estado (stateless)
+    e depende do histórico ser passado a cada chamada.
     """
     historico = dados.historico or []
 
@@ -167,7 +165,8 @@ Você é um assistente de vendas da "InovaTech Solutions", especialista em agent
 @app.post("/whatsapp")
 async def receber_mensagem_zapi(request: Request):
     """
-    Endpoint de webhook para receber mensagens da Z-API.
+    Endpoint de webhook para receber e responder mensagens da Z-API,
+    com gerenciamento de histórico de conversas que expira em 24h.
     """
     try:
         payload = await request.json()
@@ -175,7 +174,6 @@ async def receber_mensagem_zapi(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Payload JSON inválido.")
 
-    # **CORREÇÃO ANTI-LOOP**: Verifica se a mensagem foi enviada pelo próprio bot.
     if payload.get("fromMe"):
         print("--- Ignorando mensagem própria (fromMe é true) para evitar loop. ---")
         return {"status": "ok", "message": "Mensagem própria ignorada."}
@@ -190,6 +188,20 @@ async def receber_mensagem_zapi(request: Request):
         return {"status": "ok", "message": "Ignorando mensagem que não é de texto."}
 
     try:
+        # **NOVO**: Lógica de expiração do histórico
+        query_select = historico_conversas.select().where(historico_conversas.c.telefone == numero)
+        resultado = await database.fetch_one(query_select)
+        
+        historico_recuperado = []
+        if resultado:
+            last_updated = resultado["last_updated_at"]
+            # Compara a data da última mensagem com a data atual
+            if datetime.now(timezone.utc) - last_updated < timedelta(hours=24):
+                print(f"--- Histórico encontrado e válido para o número {numero} ---")
+                historico_recuperado = json.loads(resultado["historico"])
+            else:
+                print(f"--- Histórico encontrado mas expirado para o número {numero}. Iniciando nova conversa. ---")
+
         async with httpx.AsyncClient() as client:
             public_url = os.getenv("PUBLIC_URL")
             if not public_url:
@@ -197,7 +209,7 @@ async def receber_mensagem_zapi(request: Request):
 
             resposta_chat = await client.post(
                  f"{public_url.rstrip('/')}/chat",
-                 json={"mensagem": texto, "historico": []},
+                 json={"mensagem": texto, "historico": historico_recuperado},
                  timeout=60.0
             )
             resposta_chat.raise_for_status()
@@ -205,10 +217,23 @@ async def receber_mensagem_zapi(request: Request):
             dados = resposta_chat.json()
             mensagem_resposta = dados.get("reply", "Não consegui gerar uma resposta.")
 
-            print(f"--- Preparando para Enviar para Z-API ---")
-            print(f"Número: {numero}")
-            print(f"Mensagem: {mensagem_resposta}")
+            # Salva o novo histórico e atualiza o timestamp
+            historico_atualizado = historico_recuperado + [
+                {"role": "user", "content": texto},
+                {"role": "assistant", "content": mensagem_resposta}
+            ]
+            historico_str = json.dumps(historico_atualizado[-20:]) # Limita o histórico
 
+            # Lógica de UPSERT (Update ou Insert)
+            query_update = historico_conversas.update().where(historico_conversas.c.telefone == numero).values(historico=historico_str, last_updated_at=func.now())
+            executado = await database.execute(query_update)
+            if not executado: 
+                query_insert = historico_conversas.insert().values(telefone=numero, historico=historico_str, last_updated_at=func.now())
+                await database.execute(query_insert)
+            
+            print(f"--- Histórico atualizado para o número {numero} ---")
+
+            # Envio da resposta via Z-API
             instance_id = os.getenv("INSTANCE_ID")
             token = os.getenv("TOKEN")
             client_token = os.getenv("CLIENT_TOKEN") 
