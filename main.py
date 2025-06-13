@@ -70,7 +70,7 @@ async def chamar_ia(messages: List[dict]) -> str | dict:
         "Content-Type": "application/json"
     }
     body = {
-        "model": "google/gemini-flash", 
+        "model": "openai/gpt-4o-2024-11-20", 
         "messages": messages
     }
     
