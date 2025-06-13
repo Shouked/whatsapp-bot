@@ -70,27 +70,19 @@ async def chamar_ia(messages: List[dict]) -> str | dict:
         "Content-Type": "application/json"
     }
     body = {
-        "model": "openai/gpt-4o-2024-11-20", # Modelo atualizado
+        "model": "google/gemini-flash", 
         "messages": messages
     }
     
     try:
-        # Usa um cliente HTTP assíncrono para fazer a requisição
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(url, headers=headers, json=body)
-            response.raise_for_status()  # Lança uma exceção para respostas com erro (4xx ou 5xx)
-            
-            # CORREÇÃO PRINCIPAL: O método .json() do httpx não é 'awaitable'.
-            # O 'await' foi removido desta linha.
+            response.raise_for_status()
             data = response.json()
-
             content = data["choices"][0]["message"]["content"]
-            
-            # Tenta decodificar a resposta como JSON (para coletar dados de orçamento)
             try:
                 return json.loads(content)
             except json.JSONDecodeError:
-                # Se não for JSON, retorna como texto simples
                 return content
     except httpx.HTTPStatusError as e:
         print(f"Erro de status na API da IA: {e.response.status_code} - {e.response.text}")
@@ -105,8 +97,6 @@ async def baixar_e_converter_base64(url: str, mime_type: str) -> str:
     """
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # NOTA: Se a URL da Z-API precisar de autenticação, adicione os headers aqui.
-            # Ex: headers={"Authorization": "Bearer SEU_TOKEN"}
             resposta = await client.get(url)
             resposta.raise_for_status()
             base64_str = base64.b64encode(resposta.content).decode("utf-8")
@@ -153,7 +143,6 @@ Você é um assistente de vendas da "InovaTech Solutions", especialista em agent
 """
 
     messages = [{"role": "system", "content": prompt_sistema}]
-    # Garante que apenas mensagens válidas sejam adicionadas ao histórico
     for msg in historico:
         if isinstance(msg, dict) and msg.get("role") in ["user", "assistant"]:
             messages.append(msg)
@@ -161,7 +150,6 @@ Você é um assistente de vendas da "InovaTech Solutions", especialista em agent
 
     resposta = await chamar_ia(messages)
 
-    # Se a resposta for um dicionário (orçamento), salva no banco
     if isinstance(resposta, dict) and all(k in resposta for k in ["nome", "email", "telefone", "servico"]):
         try:
             query = orcamentos.insert().values(**resposta)
@@ -171,11 +159,9 @@ Você é um assistente de vendas da "InovaTech Solutions", especialista em agent
             print(f"Erro ao salvar orçamento no banco: {e}")
             return {"reply": "Recebi seus dados, mas tive um problema para registrar. Nossa equipe já foi notificada."}
     
-    # Se for uma string (resposta normal), apenas retorna
     if isinstance(resposta, str):
         return {"reply": resposta}
     
-    # Caso a resposta não seja nem string nem o dicionário esperado
     return {"reply": "Não entendi sua resposta. Poderia reformular?"}
 
 @app.post("/whatsapp")
@@ -185,10 +171,10 @@ async def receber_mensagem_zapi(request: Request):
     """
     try:
         payload = await request.json()
+        print(f"--- Payload Recebido no Webhook --- \n{json.dumps(payload, indent=2)}")
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Payload JSON inválido.")
 
-    # Extrai os dados do payload com segurança
     numero = payload.get("phone")
     texto = payload.get("text", {}).get("message") if isinstance(payload.get("text"), dict) else None
     
@@ -196,17 +182,14 @@ async def receber_mensagem_zapi(request: Request):
         raise HTTPException(status_code=400, detail="O campo 'phone' é obrigatório.")
 
     if not texto:
-        # Ignora callbacks que não são de texto para simplificar
         return {"status": "ok", "message": "Ignorando mensagem que não é de texto."}
 
     try:
         async with httpx.AsyncClient() as client:
-            # Obtém a URL pública da variável de ambiente para fazer a chamada interna
             public_url = os.getenv("PUBLIC_URL")
             if not public_url:
                 raise RuntimeError("PUBLIC_URL não configurada.")
 
-            # Chama o próprio endpoint /chat para processar a mensagem
             resposta_chat = await client.post(
                  f"{public_url.rstrip('/')}/chat",
                  json={"mensagem": texto, "historico": []},
@@ -217,16 +200,27 @@ async def receber_mensagem_zapi(request: Request):
             dados = resposta_chat.json()
             mensagem_resposta = dados.get("reply", "Não consegui gerar uma resposta.")
 
-            # Envia a resposta de volta para o usuário via Z-API
+            print(f"--- Preparando para Enviar para Z-API ---")
+            print(f"Número: {numero}")
+            print(f"Mensagem: {mensagem_resposta}")
+
             instance_id = os.getenv("INSTANCE_ID")
             token = os.getenv("TOKEN")
-            await client.post(
+            
+            # **MELHORIA**: Captura a resposta da Z-API para depuração
+            resposta_zapi = await client.post(
                 f"https://api.z-api.io/instances/{instance_id}/token/{token}/send-text",
                 json={"phone": numero, "message": mensagem_resposta},
                 timeout=30.0
             )
+            
+            print(f"--- Resposta da Z-API ---")
+            print(f"Status Code: {resposta_zapi.status_code}")
+            print(f"Body: {resposta_zapi.text}")
+
+            resposta_zapi.raise_for_status()
+
     except Exception as e:
-        print(f"Erro no webhook /whatsapp: {e}")
-        # Considerar logar o erro em um sistema de monitoramento
+        print(f"!!! Erro no Webhook /whatsapp: {e} !!!")
 
     return {"status": "ok"}
