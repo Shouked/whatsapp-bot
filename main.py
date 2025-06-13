@@ -175,6 +175,11 @@ async def receber_mensagem_zapi(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Payload JSON inválido.")
 
+    # **CORREÇÃO ANTI-LOOP**: Verifica se a mensagem foi enviada pelo próprio bot.
+    if payload.get("fromMe"):
+        print("--- Ignorando mensagem própria (fromMe é true) para evitar loop. ---")
+        return {"status": "ok", "message": "Mensagem própria ignorada."}
+
     numero = payload.get("phone")
     texto = payload.get("text", {}).get("message") if isinstance(payload.get("text"), dict) else None
     
@@ -204,10 +209,9 @@ async def receber_mensagem_zapi(request: Request):
             print(f"Número: {numero}")
             print(f"Mensagem: {mensagem_resposta}")
 
-            # **CORREÇÃO**: Adicionando o Client-Token no cabeçalho
             instance_id = os.getenv("INSTANCE_ID")
             token = os.getenv("TOKEN")
-            client_token = os.getenv("CLIENT_TOKEN") # Nova variável de ambiente
+            client_token = os.getenv("CLIENT_TOKEN") 
             
             if not client_token:
                 raise RuntimeError("CLIENT_TOKEN não configurada nas variáveis de ambiente.")
@@ -219,7 +223,7 @@ async def receber_mensagem_zapi(request: Request):
             resposta_zapi = await client.post(
                 f"https://api.z-api.io/instances/{instance_id}/token/{token}/send-text",
                 json={"phone": numero, "message": mensagem_resposta},
-                headers=zapi_headers, # Enviando o cabeçalho
+                headers=zapi_headers, 
                 timeout=30.0
             )
             
