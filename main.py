@@ -43,7 +43,7 @@ orcamentos = Table(
     Column("servico", String, nullable=False),
 )
 
-# **ALTERADO**: Definição da tabela de histórico com timestamp para expiração
+# Definição da tabela de histórico com timestamp para expiração
 historico_conversas = Table(
     "historico_conversas",
     metadata,
@@ -188,14 +188,12 @@ async def receber_mensagem_zapi(request: Request):
         return {"status": "ok", "message": "Ignorando mensagem que não é de texto."}
 
     try:
-        # **NOVO**: Lógica de expiração do histórico
         query_select = historico_conversas.select().where(historico_conversas.c.telefone == numero)
         resultado = await database.fetch_one(query_select)
         
         historico_recuperado = []
         if resultado:
             last_updated = resultado["last_updated_at"]
-            # Compara a data da última mensagem com a data atual
             if datetime.now(timezone.utc) - last_updated < timedelta(hours=24):
                 print(f"--- Histórico encontrado e válido para o número {numero} ---")
                 historico_recuperado = json.loads(resultado["historico"])
@@ -217,23 +215,24 @@ async def receber_mensagem_zapi(request: Request):
             dados = resposta_chat.json()
             mensagem_resposta = dados.get("reply", "Não consegui gerar uma resposta.")
 
-            # Salva o novo histórico e atualiza o timestamp
             historico_atualizado = historico_recuperado + [
                 {"role": "user", "content": texto},
                 {"role": "assistant", "content": mensagem_resposta}
             ]
-            historico_str = json.dumps(historico_atualizado[-20:]) # Limita o histórico
+            historico_str = json.dumps(historico_atualizado[-20:])
 
-            # Lógica de UPSERT (Update ou Insert)
-            query_update = historico_conversas.update().where(historico_conversas.c.telefone == numero).values(historico=historico_str, last_updated_at=func.now())
-            executado = await database.execute(query_update)
-            if not executado: 
-                query_insert = historico_conversas.insert().values(telefone=numero, historico=historico_str, last_updated_at=func.now())
-                await database.execute(query_insert)
+            # **CORREÇÃO**: Lógica de UPSERT simplificada e corrigida.
+            # Se o resultado existir, atualiza. Senão, insere.
+            if resultado:
+                # Atualiza o registro existente
+                query_db = historico_conversas.update().where(historico_conversas.c.telefone == numero).values(historico=historico_str, last_updated_at=func.now())
+            else:
+                # Insere um novo registro
+                query_db = historico_conversas.insert().values(telefone=numero, historico=historico_str, last_updated_at=func.now())
             
-            print(f"--- Histórico atualizado para o número {numero} ---")
+            await database.execute(query_db)
+            print(f"--- Histórico salvo para o número {numero} ---")
 
-            # Envio da resposta via Z-API
             instance_id = os.getenv("INSTANCE_ID")
             token = os.getenv("TOKEN")
             client_token = os.getenv("CLIENT_TOKEN") 
