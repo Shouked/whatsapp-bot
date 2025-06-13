@@ -148,7 +148,11 @@ async def receber_mensagem_zapi(request: Request):
 
     try:
         async with httpx.AsyncClient() as client:
-            resposta = await client.post("http://localhost:8000/chat", json={"mensagem": conteudo, "historico": []})
+            resposta = await client.post(
+    f"{os.getenv('PUBLIC_URL')}/chat",
+    json={"mensagem": conteudo, "historico": []}
+            )
+
             dados = await resposta.json()
             mensagem = dados.get("reply", "Erro ao gerar resposta")
 
