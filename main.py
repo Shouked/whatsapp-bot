@@ -204,13 +204,22 @@ async def receber_mensagem_zapi(request: Request):
             print(f"Número: {numero}")
             print(f"Mensagem: {mensagem_resposta}")
 
+            # **CORREÇÃO**: Adicionando o Client-Token no cabeçalho
             instance_id = os.getenv("INSTANCE_ID")
             token = os.getenv("TOKEN")
+            client_token = os.getenv("CLIENT_TOKEN") # Nova variável de ambiente
             
-            # **MELHORIA**: Captura a resposta da Z-API para depuração
+            if not client_token:
+                raise RuntimeError("CLIENT_TOKEN não configurada nas variáveis de ambiente.")
+
+            zapi_headers = {
+                "Client-Token": client_token
+            }
+            
             resposta_zapi = await client.post(
                 f"https://api.z-api.io/instances/{instance_id}/token/{token}/send-text",
                 json={"phone": numero, "message": mensagem_resposta},
+                headers=zapi_headers, # Enviando o cabeçalho
                 timeout=30.0
             )
             
