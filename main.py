@@ -61,10 +61,11 @@ async def chamar_ia(messages) -> str | dict:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(url, headers=headers, json=body)
             response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
+            data = await response.json()
+            content = data["choices"][0]["message"]["content"]
             try:
                 return json.loads(content)
-            except:
+            except json.JSONDecodeError:
                 return content
     except Exception as e:
         print("Erro na IA:", e)
@@ -149,10 +150,9 @@ async def receber_mensagem_zapi(request: Request):
     try:
         async with httpx.AsyncClient() as client:
             resposta = await client.post(
-    f"{os.getenv('PUBLIC_URL')}/chat",
-    json={"mensagem": conteudo, "historico": []}
+                f"{os.getenv('PUBLIC_URL')}/chat",
+                json={"mensagem": conteudo, "historico": []}
             )
-
             dados = await resposta.json()
             mensagem = dados.get("reply", "Erro ao gerar resposta")
 
