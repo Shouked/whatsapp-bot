@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import UUID
 import uuid, json, httpx, os
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
-from openai import AsyncOpenAI # **NOVO**: Importa a biblioteca da OpenAI
+from openai import AsyncOpenAI # Importa a biblioteca da OpenAI
 
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
