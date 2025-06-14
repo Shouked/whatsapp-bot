@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import UUID
 import uuid, json, httpx, os
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
+from openai import AsyncOpenAI # **NOVO**: Importa a biblioteca da OpenAI
 
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -80,7 +81,7 @@ async def chamar_ia(messages: List[dict]) -> str | dict:
     headers = {
         "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
         "Content-Type": "application/json",
-        "Referer": f"{os.getenv('PUBLIC_URL')}" # CORREÇÃO: Nome do header ajustado para "Referer"
+        "Referer": f"{os.getenv('PUBLIC_URL')}" 
     }
     body = {
         "model": "openai/gpt-4o-2024-11-20", 
@@ -104,28 +105,26 @@ async def chamar_ia(messages: List[dict]) -> str | dict:
         print(f"Erro na IA: {e}")
         return "Desculpe, ocorreu um erro interno. Tente novamente em instantes."
 
+# **ALTERADO**: Função agora usa a biblioteca oficial da OpenAI
 async def transcrever_audio(audio_bytes: bytes) -> str | None:
     """
-    Envia os bytes de um áudio para a API de transcrição do OpenRouter (Whisper).
+    Envia os bytes de um áudio para a API do Whisper da OpenAI.
     """
-    url = "https://openrouter.ai/api/v1/audio/transcriptions"
-    
-    headers = {
-        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-        "Referer": f"{os.getenv('PUBLIC_URL')}" # CORREÇÃO: Nome do header ajustado para "Referer"
-    }
-    
-    files = {'file': ('audio.ogg', audio_bytes, 'audio/ogg')}
-    data = {"model": "openai/whisper-1"}
-
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(url, headers=headers, files=files, data=data)
-            response.raise_for_status()
-            transcription_data = response.json()
-            return transcription_data.get("text")
+        # Inicializa o cliente da OpenAI de forma assíncrona
+        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        # O nome do arquivo é importante para a API identificar o tipo
+        audio_file = ("audio.ogg", audio_bytes, "audio/ogg")
+        
+        # Chama a API de transcrição
+        transcription = await client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file
+        )
+        return transcription.text
     except Exception as e:
-        print(f"Erro na transcrição de áudio: {e}")
+        print(f"Erro na transcrição de áudio com a API da OpenAI: {e}")
         return None
 
 async def baixar_audio_bytes(url: str) -> bytes | None:
