@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
@@ -43,14 +43,14 @@ orcamentos = Table(
     Column("servico", String, nullable=False),
 )
 
-# Tabela de histórico agora inclui um campo para o "modo manual" (snooze)
+# Tabela de histórico com timestamp para expiração e modo snooze
 historico_conversas = Table(
     "historico_conversas",
     metadata,
     Column("telefone", String, primary_key=True),
     Column("historico", Text, nullable=False),
     Column("last_updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
-    Column("snoozed_until", DateTime(timezone=True), nullable=True) # Novo campo
+    Column("snoozed_until", DateTime(timezone=True), nullable=True)
 )
 
 
@@ -73,16 +73,13 @@ class MensagemChat(BaseModel):
 # --- Funções Auxiliares ---
 
 async def chamar_ia(messages: List[dict]) -> str | dict:
-    """
-    Função assíncrona para chamar a API do OpenRouter e obter uma resposta da IA.
-    """
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
         "Content-Type": "application/json"
     }
     body = {
-        "model": "openai/gpt-4o-2024-11-20", 
+        "model": "openai/gpt-4o-2024-11-20", # Modelo atualizado pelo usuário
         "messages": messages
     }
     
@@ -107,14 +104,17 @@ async def chamar_ia(messages: List[dict]) -> str | dict:
 
 @app.get("/")
 async def root():
-    """Endpoint raiz para verificar se a API está no ar."""
+    """Endpoint GET para verificar se a API está no ar."""
     return {"message": "API da InovaTech Solutions no ar!"}
+
+# **NOVA ADIÇÃO**: Endpoint HEAD para o UptimeRobot
+@app.head("/")
+async def head_root():
+    """Endpoint HEAD para checagem de status por serviços de monitoramento."""
+    return Response(status_code=200)
 
 @app.post("/chat")
 async def chat(dados: MensagemChat):
-    """
-    Endpoint principal para interagir com o chatbot.
-    """
     historico = dados.historico or []
 
     prompt_sistema = """
@@ -150,7 +150,6 @@ Você é um assistente de vendas da "InovaTech Solutions", especialista em agent
 
     if isinstance(resposta, dict) and all(k in resposta for k in ["nome", "email", "telefone", "servico"]):
         try:
-            # **CORREÇÃO**: Cria um dicionário separado para o orçamento, gerando um novo ID.
             novo_orcamento = {
                 "id": uuid.uuid4(),
                 "nome": resposta["nome"],
@@ -178,16 +177,13 @@ async def receber_mensagem_zapi(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Payload JSON inválido.")
 
-    # No webhook, o campo "phone" é o número do contato, seja na ida ou na vinda.
     numero_contato = payload.get("phone")
     if not numero_contato:
         raise HTTPException(status_code=400, detail="O campo 'phone' é obrigatório.")
 
-    # Lógica para ativar o "modo manual" (snooze)
     if payload.get("fromMe"):
         snooze_until = datetime.now(timezone.utc) + timedelta(minutes=30)
         
-        # Faz um UPSERT para garantir que o registro exista e atualiza o snooze
         select_query = historico_conversas.select().where(historico_conversas.c.telefone == numero_contato)
         if await database.fetch_one(select_query):
             update_query = historico_conversas.update().where(historico_conversas.c.telefone == numero_contato).values(snoozed_until=snooze_until)
@@ -199,24 +195,20 @@ async def receber_mensagem_zapi(request: Request):
         print(f"--- Modo manual ativado para {numero_contato} por 30 minutos. ---")
         return {"status": "ok", "message": "Modo manual ativado."}
 
-    # Se a mensagem não for do bot, continua o fluxo normal
     texto = payload.get("text", {}).get("message") if isinstance(payload.get("text"), dict) else None
     if not texto:
         return {"status": "ok", "message": "Ignorando mensagem que não é de texto."}
 
     try:
-        # Verifica se a conversa está no "modo manual"
         query_select = historico_conversas.select().where(historico_conversas.c.telefone == numero_contato)
         resultado = await database.fetch_one(query_select)
         
         historico_recuperado = []
         if resultado:
-            # Verifica se o snooze está ativo
             if resultado["snoozed_until"] and resultado["snoozed_until"] > datetime.now(timezone.utc):
                 print(f"--- Conversa com {numero_contato} está em modo manual. Ignorando. ---")
                 return {"status": "ok", "message": "Conversa em modo manual."}
 
-            # Verifica se o histórico expirou (24h)
             if datetime.now(timezone.utc) - resultado["last_updated_at"] < timedelta(hours=24):
                 historico_recuperado = json.loads(resultado["historico"])
             else:
@@ -243,7 +235,6 @@ async def receber_mensagem_zapi(request: Request):
             ]
             historico_str = json.dumps(historico_atualizado[-20:])
 
-            # Atualiza o histórico e o timestamp, e remove o snooze
             if resultado:
                 query_db = historico_conversas.update().where(historico_conversas.c.telefone == numero_contato).values(historico=historico_str, last_updated_at=func.now(), snoozed_until=None)
             else:
@@ -280,3 +271,4 @@ async def receber_mensagem_zapi(request: Request):
         print(f"!!! Erro no Webhook /whatsapp: {e} !!!")
 
     return {"status": "ok"}
+
