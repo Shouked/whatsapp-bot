@@ -79,7 +79,8 @@ async def chamar_ia(messages: List[dict]) -> str | dict:
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Referer": f"{os.getenv('PUBLIC_URL')}" # CORREÇÃO: Nome do header ajustado para "Referer"
     }
     body = {
         "model": "openai/gpt-4o-2024-11-20", 
@@ -109,10 +110,9 @@ async def transcrever_audio(audio_bytes: bytes) -> str | None:
     """
     url = "https://openrouter.ai/api/v1/audio/transcriptions"
     
-    # **CORREÇÃO**: Adiciona o cabeçalho HTTP-Referer, exigido pela OpenRouter.
     headers = {
         "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-        "HTTP-Referer": f"{os.getenv('PUBLIC_URL')}"
+        "Referer": f"{os.getenv('PUBLIC_URL')}" # CORREÇÃO: Nome do header ajustado para "Referer"
     }
     
     files = {'file': ('audio.ogg', audio_bytes, 'audio/ogg')}
