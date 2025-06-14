@@ -105,19 +105,13 @@ async def chamar_ia(messages: List[dict]) -> str | dict:
         print(f"Erro na IA: {e}")
         return "Desculpe, ocorreu um erro interno. Tente novamente em instantes."
 
-# **ALTERADO**: Função agora usa a biblioteca oficial da OpenAI
 async def transcrever_audio(audio_bytes: bytes) -> str | None:
     """
     Envia os bytes de um áudio para a API do Whisper da OpenAI.
     """
     try:
-        # Inicializa o cliente da OpenAI de forma assíncrona
         client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        
-        # O nome do arquivo é importante para a API identificar o tipo
         audio_file = ("audio.ogg", audio_bytes, "audio/ogg")
-        
-        # Chama a API de transcrição
         transcription = await client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file
@@ -240,7 +234,8 @@ async def receber_mensagem_zapi(request: Request):
             texto_transcrito = await transcrever_audio(audio_bytes)
             if texto_transcrito:
                 print(f"--- Texto Transcrito --- \n{texto_transcrito}")
-                conteudo_processar = f"[Mensagem de áudio transcrita]: {texto_transcrito}"
+                # **CORREÇÃO**: Enviamos apenas o texto transcrito para a IA, sem a nota.
+                conteudo_processar = texto_transcrito
             else:
                 conteudo_processar = "[Não foi possível transcrever o áudio. Peça para o usuário repetir.]"
         else:
