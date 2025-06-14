@@ -108,9 +108,13 @@ async def transcrever_audio(audio_bytes: bytes) -> str | None:
     Envia os bytes de um áudio para a API de transcrição do OpenRouter (Whisper).
     """
     url = "https://openrouter.ai/api/v1/audio/transcriptions"
+    
+    # **CORREÇÃO**: Adiciona o cabeçalho HTTP-Referer, exigido pela OpenRouter.
     headers = {
         "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+        "HTTP-Referer": f"{os.getenv('PUBLIC_URL')}"
     }
+    
     files = {'file': ('audio.ogg', audio_bytes, 'audio/ogg')}
     data = {"model": "openai/whisper-1"}
 
@@ -223,10 +227,7 @@ async def receber_mensagem_zapi(request: Request):
         print(f"--- Modo manual ativado para {numero_contato} por 30 minutos. ---")
         return {"status": "ok", "message": "Modo manual ativado."}
 
-    # Lógica para identificar texto OU áudio
     texto_da_mensagem = payload.get("text", {}).get("message") if isinstance(payload.get("text"), dict) else None
-    
-    # **CORREÇÃO**: A chave no payload é 'audioUrl' (com 'U' maiúsculo) e não 'url'.
     audio_url = payload.get("audio", {}).get("audioUrl") if isinstance(payload.get("audio"), dict) else None
     
     conteudo_processar = None
