@@ -5,7 +5,7 @@ from typing import Optional, List
 from databases import Database
 from sqlalchemy import create_engine, MetaData, Table, Column, String, Text, DateTime, func
 from sqlalchemy.dialects.postgresql import UUID
-import uuid, json, httpx, os, base64
+import uuid, json, httpx, os
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
 
@@ -73,13 +73,16 @@ class MensagemChat(BaseModel):
 # --- Funções Auxiliares ---
 
 async def chamar_ia(messages: List[dict]) -> str | dict:
+    """
+    Função assíncrona para chamar a API de chat do OpenRouter.
+    """
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
         "Content-Type": "application/json"
     }
     body = {
-        "model": "openai/gpt-4o-2024-11-20", # Modelo atualizado pelo usuário
+        "model": "openai/gpt-4o-2024-11-20", 
         "messages": messages
     }
     
@@ -100,6 +103,43 @@ async def chamar_ia(messages: List[dict]) -> str | dict:
         print(f"Erro na IA: {e}")
         return "Desculpe, ocorreu um erro interno. Tente novamente em instantes."
 
+# **NOVO**: Função para transcrever áudio
+async def transcrever_audio(audio_bytes: bytes) -> str | None:
+    """
+    Envia os bytes de um áudio para a API de transcrição do OpenRouter (Whisper).
+    """
+    url = "https://openrouter.ai/api/v1/audio/transcriptions"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+    }
+    files = {'file': ('audio.ogg', audio_bytes, 'audio/ogg')}
+    data = {"model": "openai/whisper-1"}
+
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            response = await client.post(url, headers=headers, files=files, data=data)
+            response.raise_for_status()
+            transcription_data = response.json()
+            return transcription_data.get("text")
+    except Exception as e:
+        print(f"Erro na transcrição de áudio: {e}")
+        return None
+
+# **NOVO**: Função para baixar o conteúdo do áudio
+async def baixar_audio_bytes(url: str) -> bytes | None:
+    """
+    Baixa o conteúdo de um áudio de uma URL e retorna os bytes brutos.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            zapi_headers = {"Client-Token": os.getenv("CLIENT_TOKEN")}
+            resposta = await client.get(url, headers=zapi_headers)
+            resposta.raise_for_status()
+            return resposta.content
+    except Exception as e:
+        print(f"Erro ao baixar áudio: {e}")
+        return None
+
 # --- Endpoints da API ---
 
 @app.get("/")
@@ -107,7 +147,6 @@ async def root():
     """Endpoint GET para verificar se a API está no ar."""
     return {"message": "API da InovaTech Solutions no ar!"}
 
-# **NOVA ADIÇÃO**: Endpoint HEAD para o UptimeRobot
 @app.head("/")
 async def head_root():
     """Endpoint HEAD para checagem de status por serviços de monitoramento."""
@@ -116,7 +155,6 @@ async def head_root():
 @app.post("/chat")
 async def chat(dados: MensagemChat):
     historico = dados.historico or []
-
     prompt_sistema = """
 ### Papel e Objetivo
 Você é um assistente de vendas da "InovaTech Solutions", especialista em agentes de IA personalizados. Seu objetivo é engajar os visitantes do site, tirar dúvidas sobre nossos serviços e, caso demonstrem interesse, coletar os dados necessários para um orçamento.
@@ -150,19 +188,13 @@ Você é um assistente de vendas da "InovaTech Solutions", especialista em agent
 
     if isinstance(resposta, dict) and all(k in resposta for k in ["nome", "email", "telefone", "servico"]):
         try:
-            novo_orcamento = {
-                "id": uuid.uuid4(),
-                "nome": resposta["nome"],
-                "email": resposta["email"],
-                "telefone": resposta["telefone"],
-                "servico": resposta["servico"]
-            }
+            novo_orcamento = {"id": uuid.uuid4(), **resposta}
             query = orcamentos.insert().values(**novo_orcamento)
             await database.execute(query)
             return {"reply": "Orçamento recebido com sucesso! Nossa equipe entrará em contato em breve."}
         except Exception as e:
             print(f"Erro ao salvar orçamento no banco: {e}")
-            return {"reply": "Recebi seus dados, mas tive um problema para registrar. Nossa equipe já foi notificada."}
+            return {"reply": "Recebi seus dados, mas tive um problema para registrar."}
     
     if isinstance(resposta, str):
         return {"reply": resposta}
@@ -173,7 +205,7 @@ Você é um assistente de vendas da "InovaTech Solutions", especialista em agent
 async def receber_mensagem_zapi(request: Request):
     try:
         payload = await request.json()
-        print(f"--- Payload Recebido no Webhook --- \n{json.dumps(payload, indent=2)}")
+        print(f"--- Payload Recebido --- \n{json.dumps(payload, indent=2)}")
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Payload JSON inválido.")
 
@@ -183,7 +215,6 @@ async def receber_mensagem_zapi(request: Request):
 
     if payload.get("fromMe"):
         snooze_until = datetime.now(timezone.utc) + timedelta(minutes=30)
-        
         select_query = historico_conversas.select().where(historico_conversas.c.telefone == numero_contato)
         if await database.fetch_one(select_query):
             update_query = historico_conversas.update().where(historico_conversas.c.telefone == numero_contato).values(snoozed_until=snooze_until)
@@ -191,13 +222,32 @@ async def receber_mensagem_zapi(request: Request):
         else:
             insert_query = historico_conversas.insert().values(telefone=numero_contato, historico="[]", last_updated_at=func.now(), snoozed_until=snooze_until)
             await database.execute(insert_query)
-            
         print(f"--- Modo manual ativado para {numero_contato} por 30 minutos. ---")
         return {"status": "ok", "message": "Modo manual ativado."}
 
-    texto = payload.get("text", {}).get("message") if isinstance(payload.get("text"), dict) else None
-    if not texto:
-        return {"status": "ok", "message": "Ignorando mensagem que não é de texto."}
+    # **ALTERADO**: Lógica para identificar texto OU áudio
+    texto_da_mensagem = payload.get("text", {}).get("message") if isinstance(payload.get("text"), dict) else None
+    audio_url = payload.get("audio", {}).get("url") if isinstance(payload.get("audio"), dict) else None
+    
+    conteudo_processar = None
+
+    if texto_da_mensagem:
+        conteudo_processar = texto_da_mensagem
+    elif audio_url:
+        print("--- Detectado áudio. Iniciando processo de transcrição. ---")
+        audio_bytes = await baixar_audio_bytes(audio_url)
+        if audio_bytes:
+            texto_transcrito = await transcrever_audio(audio_bytes)
+            if texto_transcrito:
+                print(f"--- Texto Transcrito --- \n{texto_transcrito}")
+                conteudo_processar = f"[Mensagem de áudio transcrita]: {texto_transcrito}"
+            else:
+                conteudo_processar = "[Não foi possível transcrever o áudio. Peça para o usuário repetir.]"
+        else:
+            conteudo_processar = "[Houve um erro ao baixar o áudio. Peça para o usuário reenviar.]"
+
+    if not conteudo_processar:
+        return {"status": "ok", "message": "Ignorando mensagem sem conteúdo de texto ou áudio."}
 
     try:
         query_select = historico_conversas.select().where(historico_conversas.c.telefone == numero_contato)
@@ -206,23 +256,18 @@ async def receber_mensagem_zapi(request: Request):
         historico_recuperado = []
         if resultado:
             if resultado["snoozed_until"] and resultado["snoozed_until"] > datetime.now(timezone.utc):
-                print(f"--- Conversa com {numero_contato} está em modo manual. Ignorando. ---")
                 return {"status": "ok", "message": "Conversa em modo manual."}
-
             if datetime.now(timezone.utc) - resultado["last_updated_at"] < timedelta(hours=24):
                 historico_recuperado = json.loads(resultado["historico"])
             else:
-                print(f"--- Histórico expirado para {numero_contato}. Iniciando nova conversa. ---")
+                print(f"--- Histórico expirado para {numero_contato}. ---")
 
         async with httpx.AsyncClient() as client:
             public_url = os.getenv("PUBLIC_URL")
-            if not public_url:
-                raise RuntimeError("PUBLIC_URL não configurada.")
-
             resposta_chat = await client.post(
                  f"{public_url.rstrip('/')}/chat",
-                 json={"mensagem": texto, "historico": historico_recuperado},
-                 timeout=60.0
+                 json={"mensagem": conteudo_processar, "historico": historico_recuperado},
+                 timeout=90.0
             )
             resposta_chat.raise_for_status()
             
@@ -230,7 +275,7 @@ async def receber_mensagem_zapi(request: Request):
             mensagem_resposta = dados.get("reply", "Não consegui gerar uma resposta.")
 
             historico_atualizado = historico_recuperado + [
-                {"role": "user", "content": texto},
+                {"role": "user", "content": conteudo_processar},
                 {"role": "assistant", "content": mensagem_resposta}
             ]
             historico_str = json.dumps(historico_atualizado[-20:])
@@ -241,31 +286,20 @@ async def receber_mensagem_zapi(request: Request):
                 query_db = historico_conversas.insert().values(telefone=numero_contato, historico=historico_str, last_updated_at=func.now(), snoozed_until=None)
             
             await database.execute(query_db)
-            print(f"--- Histórico salvo e modo manual desativado para {numero_contato} ---")
+            print(f"--- Histórico salvo para {numero_contato} ---")
 
             instance_id = os.getenv("INSTANCE_ID")
             token = os.getenv("TOKEN")
             client_token = os.getenv("CLIENT_TOKEN") 
             
-            if not client_token:
-                raise RuntimeError("CLIENT_TOKEN não configurada nas variáveis de ambiente.")
-
-            zapi_headers = {
-                "Client-Token": client_token
-            }
+            zapi_headers = {"Client-Token": client_token}
             
-            resposta_zapi = await client.post(
+            await client.post(
                 f"https://api.z-api.io/instances/{instance_id}/token/{token}/send-text",
                 json={"phone": numero_contato, "message": mensagem_resposta},
                 headers=zapi_headers, 
                 timeout=30.0
             )
-            
-            print(f"--- Resposta da Z-API ---")
-            print(f"Status Code: {resposta_zapi.status_code}")
-            print(f"Body: {resposta_zapi.text}")
-
-            resposta_zapi.raise_for_status()
 
     except Exception as e:
         print(f"!!! Erro no Webhook /whatsapp: {e} !!!")
