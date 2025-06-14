@@ -103,7 +103,6 @@ async def chamar_ia(messages: List[dict]) -> str | dict:
         print(f"Erro na IA: {e}")
         return "Desculpe, ocorreu um erro interno. Tente novamente em instantes."
 
-# **NOVO**: Função para transcrever áudio
 async def transcrever_audio(audio_bytes: bytes) -> str | None:
     """
     Envia os bytes de um áudio para a API de transcrição do OpenRouter (Whisper).
@@ -125,7 +124,6 @@ async def transcrever_audio(audio_bytes: bytes) -> str | None:
         print(f"Erro na transcrição de áudio: {e}")
         return None
 
-# **NOVO**: Função para baixar o conteúdo do áudio
 async def baixar_audio_bytes(url: str) -> bytes | None:
     """
     Baixa o conteúdo de um áudio de uma URL e retorna os bytes brutos.
@@ -225,9 +223,11 @@ async def receber_mensagem_zapi(request: Request):
         print(f"--- Modo manual ativado para {numero_contato} por 30 minutos. ---")
         return {"status": "ok", "message": "Modo manual ativado."}
 
-    # **ALTERADO**: Lógica para identificar texto OU áudio
+    # Lógica para identificar texto OU áudio
     texto_da_mensagem = payload.get("text", {}).get("message") if isinstance(payload.get("text"), dict) else None
-    audio_url = payload.get("audio", {}).get("url") if isinstance(payload.get("audio"), dict) else None
+    
+    # **CORREÇÃO**: A chave no payload é 'audioUrl' (com 'U' maiúsculo) e não 'url'.
+    audio_url = payload.get("audio", {}).get("audioUrl") if isinstance(payload.get("audio"), dict) else None
     
     conteudo_processar = None
 
@@ -305,4 +305,3 @@ async def receber_mensagem_zapi(request: Request):
         print(f"!!! Erro no Webhook /whatsapp: {e} !!!")
 
     return {"status": "ok"}
-
